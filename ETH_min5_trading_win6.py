@@ -4,6 +4,23 @@ import numpy as np
 import torch
 import torch.nn as nn
 import pyupbit
+import requests
+
+# --- LINE Notify 설정 ---
+TARGET_URL = 'https://notify-api.line.me/api/notify'
+TOKEN = "token"
+def send_line_notification(message):
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {"message": message}
+    response = requests.post(TARGET_URL, headers=headers, data=data)
+    return response
+
+def notify(message):
+    print(message)
+    send_line_notification(message)
 
 # --- 전처리 함수 ---
 def rolling_minmax_scale(series, window=6):
@@ -121,7 +138,7 @@ def get_model_prediction():
     """
     df = pyupbit.get_ohlcv(ticker, interval="minute5", count=15)
     if df is None or len(df) < lookback:
-        print("예측에 충분한 데이터가 없습니다.")
+        notify("예측에 충분한 데이터가 없습니다.")
         return None
     ohlc_features = ['open', 'high', 'low', 'close']
     for feature in ohlc_features:
@@ -129,14 +146,14 @@ def get_model_prediction():
     df_processed = bin_and_encode(df.copy(), ohlc_features, bins=100, drop_original=True)
     final_input_columns = [col for col in df_processed.columns if '_Bin_' in col]
     if len(df_processed) < lookback:
-        print("lookback 데이터가 부족합니다.")
+        notify("lookback 데이터가 부족합니다.")
         return None
     input_seq = df_processed[final_input_columns].iloc[-lookback:]
     # 모델 입력 형태: [batch, seq_len, features]
     x = torch.tensor(input_seq.values, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
         y_cont = model.sample(x, device)  # continuous output
-        print("디버그: y_cont =", y_cont.item())
+        notify("디버그: y_cont = " + str(y_cont.item()))
         prediction = 1 if y_cont.item() >= 0.5 else 0
     return prediction
 
@@ -157,18 +174,18 @@ def trade_decision():
         return
     entry_price = pyupbit.get_current_price(ticker)
     if entry_price is None:
-        print("현재가를 조회하지 못했습니다.")
+        notify("현재가를 조회하지 못했습니다.")
         return
     if prediction == 1:
         # 상승 예측: KRW 잔고의 50% 사용하여 매수 → 구매 코인 수 = (거래금액 / 진입가)
         krw_balance = upbit.get_balance("KRW")
         if krw_balance is None or krw_balance < 5000:
-            print("매수할 충분한 KRW 잔고가 없습니다.")
+            notify("매수할 충분한 KRW 잔고가 없습니다.")
             return
         trade_amount_krw = krw_balance * 0.5
         coins_bought = trade_amount_krw / entry_price
-        print(f"[진입] 상승 예측: KRW 잔고의 50%({trade_amount_krw:.0f} KRW)로 매수, 진입가: {entry_price:.2f}, 구매 개수: {coins_bought:.4f} 개")
-        upbit.buy_market_order(ticker, trade_amount_krw)  # 실제 주문 실행 시 주석 해제
+        notify(f"[진입] 상승 예측: KRW 잔고의 50%({trade_amount_krw:.0f} KRW)로 매수, 진입가: {entry_price:.2f}, 구매 개수: {coins_bought:.4f} 개")
+        upbit.buy_market_order(ticker, trade_amount_krw)  # 실제 주문 실행 (주석 해제)
         pending_trade = {
             'direction': prediction,  # 1: Long
             'entry_price': entry_price,
@@ -180,11 +197,11 @@ def trade_decision():
         coin = ticker.split("-")[1]
         coin_balance = upbit.get_balance(coin)
         if coin_balance is None or coin_balance <= 0:
-            print("매도할 보유 코인이 없습니다.")
+            notify("매도할 보유 코인이 없습니다.")
             return
         trade_amount_coins = coin_balance * 0.5
-        print(f"[진입] 하락 예측: 보유 코인의 50%({trade_amount_coins:.4f} 개) 매도, 진입가: {entry_price:.2f}")
-        upbit.sell_market_order(ticker, trade_amount_coins)  # 실제 주문 실행 시 주석 해제
+        notify(f"[진입] 하락 예측: 보유 코인의 50%({trade_amount_coins:.4f} 개) 매도, 진입가: {entry_price:.2f}")
+        upbit.sell_market_order(ticker, trade_amount_coins)  # 실제 주문 실행 (주석 해제)
         pending_trade = {
             'direction': prediction,  # 0: Short
             'entry_price': entry_price,
@@ -199,7 +216,7 @@ def process_pending_trade():
         return
     exit_price = pyupbit.get_current_price(ticker)
     if exit_price is None:
-        print("청산 가격을 조회하지 못했습니다.")
+        notify("청산 가격을 조회하지 못했습니다.")
         return
     direction = pending_trade['direction']
     entry_price = pending_trade['entry_price']
@@ -225,9 +242,9 @@ def process_pending_trade():
     stats['cumulative_return'] *= trade_return
     stats['trade_returns'].append(trade_return)
     quantity = pending_trade.get('quantity', 0)
-    print(f"[청산] {trade_type} 거래 - 진입가: {entry_price:.2f}, 청산가: {exit_price:.2f}, 거래 개수: {quantity:.4f} 개, 거래 수익률: {trade_return:.4f} ({outcome})")
+    notify(f"[청산] {trade_type} 거래 - 진입가: {entry_price:.2f}, 청산가: {exit_price:.2f}, 거래 개수: {quantity:.4f} 개, 거래 수익률: {trade_return:.4f} ({outcome})")
     hit_ratio = stats['win_count'] / stats['total_trades'] if stats['total_trades'] > 0 else 0
-    print(f"거래 횟수: {stats['total_trades']}, Hit Ratio: {hit_ratio:.2%}, 누적 수익률: {stats['cumulative_return']:.4f}\n")
+    notify(f"거래 횟수: {stats['total_trades']}, Hit Ratio: {hit_ratio:.2%}, 누적 수익률: {stats['cumulative_return']:.4f}\n")
     pending_trade = None
 
 # --- 메인 루프: 새로운 5분봉이 생성될 때마다 업데이트 ---
@@ -240,11 +257,11 @@ while True:
             if last_candle_time is None or current_candle_time > last_candle_time:
                 if pending_trade is not None:
                     process_pending_trade()
-                print(f"새로운 5분봉 생성: {current_candle_time}")
+                notify(f"새로운 5분봉 생성: {current_candle_time}")
                 trade_decision()
                 last_candle_time = current_candle_time
         else:
-            print("최신 5분봉 데이터를 불러오지 못했습니다.")
+            notify("최신 5분봉 데이터를 불러오지 못했습니다.")
     except Exception as e:
-        print(f"에러 발생: {e}")
+        notify(f"에러 발생: {e}")
     time.sleep(10)
