@@ -14,7 +14,7 @@ def send_line_notification(message):
     response = requests.post(TARGET_URL, headers=headers, data=data)
 
 # 모니터링 대상 프로세스 이름
-processes_to_monitor = ['ETH_trading_min5_win6.py']
+processes_to_monitor = ['ETH_min5_trading_win6.py']
 
 while True:  # 무한 루프 시작
     for process in processes_to_monitor:
